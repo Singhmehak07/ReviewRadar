@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+scikit-learn==1.8.0
+numpy==2.3.5
+scipy==1.16.3
+joblib
+vaderSentiment
+beautifulsoup4
+playwright
+python-multipart
+pandas
