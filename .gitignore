@@ -9,3 +9,5 @@ env/
 .DS_Store
 .agents/
 ...agents/
+ORIGINAL_REQUEST.md
+inspect.ipynb
