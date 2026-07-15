@@ -81,58 +81,19 @@ def analyze_review(raw_text: str, rating: int | None = None) -> dict:
         if flag == "contradiction":
             # Determine VADER compound
             compound = sentiment_compound(cleaned_text)
-            if active_rating >= 4 and compound <= -0.3:
-                consistency_reason = "The positive star rating conflicts with negative wording in the review."
-            elif active_rating <= 2 and compound >= 0.3:
-                consistency_reason = "The negative star rating conflicts with positive wording in the review."
-
-    # Model contribution reasons
-    features = tfidf.transform([cleaned_text])
-    coo = features.tocoo()
-    
-    cg_index = list(model.classes_).index("1")
-    coefs = model.coef_[0]
-    if cg_index == 0:
-        coefs = -coefs
-        
-    contributions = []
-    feature_names = tfidf.get_feature_names_out()
-    for col, val in zip(coo.col, coo.data):
-        coef = coefs[col]
-        contrib = val * coef
-        if contrib > 0:
-            contributions.append((feature_names[col], contrib))
-            
-    contributions.sort(key=lambda x: x[1], reverse=True)
-    top_features = [feat for feat, contrib in contributions[:3]]
-    
-    model_reason = None
-    if top_features:
-        quoted_feats = [f'"{f}"' for f in top_features]
-        phrase_list = ", ".join(quoted_feats)
-        model_reason = f"The model weighted phrases such as {phrase_list} toward the computer-generated class."
+            rating_map = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}
+            rating_word = rating_map.get(active_rating, "star")
+            if active_rating >= 4:
+                consistency_reason = f"The {rating_word}-star rating conflicts with negative wording."
+            else:
+                consistency_reason = f"The {rating_word}-star rating conflicts with positive wording."
 
     # Aggregate reasons
     internal_reasons = []
     if consistency_reason:
         internal_reasons.append({"code": "rating_contradiction", "message": consistency_reason})
-    if model_reason:
-        internal_reasons.append({"code": "model_phrases", "message": model_reason})
 
-    # Fallbacks if no evidence is found
-    if not internal_reasons:
-        score = pred["risk_score"]
-        if score < 40:
-            msg = "The model found few strong phrase-level indicators associated with computer-generated reviews."
-        elif score < 70:
-            msg = "The model found mixed phrase-level evidence and no single pattern was decisive."
-        else:
-            msg = "The combined writing pattern resembles the model's computer-generated training examples, but no single phrase explains the result on its own."
-        internal_reasons.append({"code": "fallback", "message": msg})
-        
-    internal_reasons = internal_reasons[:3]
     reasons = [r["message"] for r in internal_reasons]
-    
     interp = get_risk_interpretation(pred["risk_score"])
     
     res = {
