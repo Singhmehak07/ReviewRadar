@@ -15,13 +15,27 @@ def clean_for_sentiment(text: str) -> str:
     return text
 
 
-def consistency_flag(rating: int, text: str) -> str:
+def consistency_flag(text: str, rating: int) -> str:
     cleaned = clean_for_sentiment(text)
     if not cleaned:
         return "no_text"
-    compound = _analyzer.polarity_scores(cleaned)["compound"]
+    
+    # Truncate text to 5000 characters to avoid VADER performance bottlenecks on long inputs
+    if len(cleaned) > 5000:
+        cleaned = cleaned[:5000]
+        
+    analyzer = get_analyzer()
+    compound = analyzer.polarity_scores(cleaned)["compound"]
     if (rating >= 4 and compound <= -0.3) or (rating <= 2 and compound >= 0.3):
         return "contradiction"
     if -0.3 < compound < 0.3:
         return "neutral_text"
     return "consistent"
+
+# Backward compatibility aliases for tests
+clean_text_for_sentiment = clean_for_sentiment
+get_consistency_flag = consistency_flag
+
+def get_analyzer():
+    return _analyzer
+

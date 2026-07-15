@@ -1,6 +1,14 @@
 import joblib
 import re
 import os
+from text_cleaning import clean_review_text
+from signals.consistency import consistency_flag
+
+class EmptyCleanedTextError(ValueError):
+    pass
+
+HIGH_RISK_THRESHOLD = 70
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 tfidf = joblib.load(os.path.join(BASE_DIR, "models", "tfidf_vectorizer.joblib"))
@@ -32,6 +40,91 @@ def predict_review(text):
         "disclaimer": "Highlights suspicious review patterns; does not prove fraud."
     }
 
+def analyze_review(raw_text: str, rating: int | None = None) -> dict:
+    cleaning_res = clean_review_text(raw_text)
+    cleaned_text = cleaning_res["cleaned_text"]
+    if not cleaned_text:
+        raise EmptyCleanedTextError("No meaningful review text remained after removing copied interface content.")
+        
+    # Run prediction
+    pred = predict_review(cleaned_text)
+    
+    # Rating selection
+    active_rating = rating
+    if active_rating is None:
+        active_rating = cleaning_res["extracted_rating"]
+        
+    # Consistency signal
+    flag = None
+    consistency_reason = None
+    if active_rating is not None:
+        flag = consistency_flag(cleaned_text, active_rating)
+        if flag == "contradiction":
+            # Determine VADER compound
+            from signals.consistency import clean_for_sentiment, _analyzer
+            c_text = clean_for_sentiment(cleaned_text)
+            compound = _analyzer.polarity_scores(c_text)["compound"]
+            if active_rating >= 4 and compound <= -0.3:
+                consistency_reason = "The positive star rating conflicts with negative wording in the review."
+            elif active_rating <= 2 and compound >= 0.3:
+                consistency_reason = "The negative star rating conflicts with positive wording in the review."
+
+    # Model contribution reasons
+    features = tfidf.transform([cleaned_text])
+    coo = features.tocoo()
+    
+    cg_index = list(model.classes_).index("1")
+    coefs = model.coef_[0]
+    if cg_index == 0:
+        coefs = -coefs
+        
+    contributions = []
+    feature_names = tfidf.get_feature_names_out()
+    for col, val in zip(coo.col, coo.data):
+        coef = coefs[col]
+        contrib = val * coef
+        if contrib > 0:
+            contributions.append((feature_names[col], contrib))
+            
+    contributions.sort(key=lambda x: x[1], reverse=True)
+    top_features = [feat for feat, contrib in contributions[:3]]
+    
+    model_reason = None
+    if top_features:
+        quoted_feats = [f'"{f}"' for f in top_features]
+        phrase_list = ", ".join(quoted_feats)
+        model_reason = f"The model weighted phrases such as {phrase_list} toward the computer-generated class."
+    else:
+        model_reason = "The model found few strong phrase-level indicators associated with computer-generated reviews."
+
+    # Aggregate reasons (cap at 3)
+    reasons = []
+    if consistency_reason:
+        reasons.append(consistency_reason)
+    if model_reason:
+        reasons.append(model_reason)
+        
+    reasons = reasons[:3]
+    
+    res = {
+        "cleaned_text": cleaned_text,
+        "risk_score": pred["risk_score"],
+        "risk_band": pred["risk_band"],
+        "reasons": reasons,
+        "cleaning": {
+            "original_character_count": cleaning_res["original_character_count"],
+            "cleaned_character_count": cleaning_res["cleaned_character_count"],
+            "removed_noise_lines": cleaning_res["removed_noise_lines"],
+            "extracted_rating": cleaning_res["extracted_rating"]
+        },
+        "disclaimer": pred["disclaimer"]
+    }
+    
+    if flag is not None:
+        res["consistency_flag"] = flag
+        
+    return res
+
 if __name__ == "__main__":
     # Test clean_text
     assert clean_text("<p>Hello World http://example.com</p>  ") == "hello world"
@@ -45,4 +138,4 @@ if __name__ == "__main__":
     assert isinstance(res["risk_score"], float)
     assert res["risk_band"] in ["Low", "Moderate", "High"]
     assert res["disclaimer"] == "Highlights suspicious review patterns; does not prove fraud."
-    print("All backend/predict.py basic self-check assertions passed successfully!")
+    print("All backend/predict.py basic self-check assertions passed successfully!")
