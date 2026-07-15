@@ -13,9 +13,8 @@ htmlcov/
 .DS_Store
 .agents/
 ...agents/
-
-# Exclude local training CSV datasets but allow other files
-*.csv
+ORIGINAL_REQUEST.md
+inspect.ipynb
 
 # Keep models
 !backend/models/*.joblib
