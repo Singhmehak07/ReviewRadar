@@ -1,13 +1,23 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
 venv/
 env/
 .pytest_cache/
 .env
+.env.*
+!.env.example
+.coverage
+htmlcov/
 *.log
 .DS_Store
 .agents/
 ...agents/
 ORIGINAL_REQUEST.md
 inspect.ipynb
+
+# Exclude local training CSV datasets but allow other files
+*.csv
+
+# Keep models
+!backend/models/*.joblib

@@ -2,6 +2,21 @@
 
 ReviewRadar is an explainable machine-learning review credibility analyzer. It highlights writing patterns associated with computer-generated reviews to assist users in screening and educational review analysis.
 
+## Setup & Startup
+
+### 1. Installation
+Install the dependencies from the canonical requirements file:
+```bash
+pip install -r backend/requirements.txt
+```
+
+### 2. Running Locally
+Start the FastAPI server from the `backend` directory:
+```bash
+cd backend
+uvicorn main:app --reload
+```
+
 ## Core Capabilities
 
 1.  **Single-Review Analysis**: Analyzes a pasted review and returns an estimated risk score along with a plain-language interpretation and model-grounded reasons.
@@ -11,7 +26,7 @@ ReviewRadar is an explainable machine-learning review credibility analyzer. It h
 
 ## Technical Architecture
 
-*   **Model**: TF-IDF Vectorization followed by a Logistic Regression Classifier.
+*   **Model**: TF-IDF Vectorization followed by a Logistic Regression Classifier. Detailed information is available in the [Model Card](backend/MODEL_CARD.md).
 *   **Explainability**: Identifies positive word and phrase contributions toward class `"1"` (the computer-generated writing pattern class) to display as plain-language reasons.
 *   **Secondary Signals**: Computes VADER sentiment polarity to flag star rating conflicts.
 *   **Responsible Interpretation**: Separates scores into Low, Moderate, and High bands, providing structured, non-accusatory summaries.
