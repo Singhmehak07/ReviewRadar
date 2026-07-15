@@ -1,20 +1,37 @@
+# Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
 .venv/
 venv/
 env/
-.pytest_cache/
+
+# Environment variables
 .env
 .env.*
 !.env.example
-.coverage
-htmlcov/
+
+# Logs and OS files
 *.log
 .DS_Store
-.agents/
-...agents/
-ORIGINAL_REQUEST.md
-inspect.ipynb
+Thumbs.db
 
-# Keep models
+# IDE files
+.vscode/
+.idea/
+
+# Local training datasets
+data/raw/*.csv
+data/split/*.csv
+
+# Keep documentation and synthetic samples
+!data/README.md
+!data/sample/
+!data/sample/*.csv
+
+# Model artifacts required by the API
 !backend/models/*.joblib

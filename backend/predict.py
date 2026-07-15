@@ -2,7 +2,7 @@ import joblib
 import re
 import os
 from text_cleaning import clean_review_text
-from signals.consistency import consistency_flag
+from signals.consistency import consistency_flag, sentiment_compound
 
 class EmptyCleanedTextError(ValueError):
     pass
@@ -80,9 +80,7 @@ def analyze_review(raw_text: str, rating: int | None = None) -> dict:
         flag = consistency_flag(cleaned_text, active_rating)
         if flag == "contradiction":
             # Determine VADER compound
-            from signals.consistency import clean_for_sentiment, _analyzer
-            c_text = clean_for_sentiment(cleaned_text)
-            compound = _analyzer.polarity_scores(c_text)["compound"]
+            compound = sentiment_compound(cleaned_text)
             if active_rating >= 4 and compound <= -0.3:
                 consistency_reason = "The positive star rating conflicts with negative wording in the review."
             elif active_rating <= 2 and compound >= 0.3:
@@ -115,23 +113,25 @@ def analyze_review(raw_text: str, rating: int | None = None) -> dict:
         model_reason = f"The model weighted phrases such as {phrase_list} toward the computer-generated class."
 
     # Aggregate reasons
-    reasons = []
+    internal_reasons = []
     if consistency_reason:
-        reasons.append(consistency_reason)
+        internal_reasons.append({"code": "rating_contradiction", "message": consistency_reason})
     if model_reason:
-        reasons.append(model_reason)
+        internal_reasons.append({"code": "model_phrases", "message": model_reason})
 
     # Fallbacks if no evidence is found
-    if not reasons:
+    if not internal_reasons:
         score = pred["risk_score"]
         if score < 40:
-            reasons.append("The model found few strong phrase-level indicators associated with computer-generated reviews.")
+            msg = "The model found few strong phrase-level indicators associated with computer-generated reviews."
         elif score < 70:
-            reasons.append("The model found mixed phrase-level evidence and no single pattern was decisive.")
+            msg = "The model found mixed phrase-level evidence and no single pattern was decisive."
         else:
-            reasons.append("The combined writing pattern resembles the model's computer-generated training examples, but no single phrase explains the result on its own.")
+            msg = "The combined writing pattern resembles the model's computer-generated training examples, but no single phrase explains the result on its own."
+        internal_reasons.append({"code": "fallback", "message": msg})
         
-    reasons = reasons[:3]
+    internal_reasons = internal_reasons[:3]
+    reasons = [r["message"] for r in internal_reasons]
     
     interp = get_risk_interpretation(pred["risk_score"])
     
@@ -145,6 +145,7 @@ def analyze_review(raw_text: str, rating: int | None = None) -> dict:
             "description": interp["description"]
         },
         "reasons": reasons,
+        "_reasons": internal_reasons,
         "cleaning": {
             "original_character_count": cleaning_res["original_character_count"],
             "cleaned_character_count": cleaning_res["cleaned_character_count"],

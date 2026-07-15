@@ -6,13 +6,18 @@ from typing import Optional
 import pandas as pd
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from predict import analyze_review, EmptyCleanedTextError, HIGH_RISK_THRESHOLD, get_risk_interpretation
 from text_cleaning import clean_review_text
 
 DISCLAIMER = "Highlights suspicious review patterns; does not prove fraud."
 BATCH_MESSAGE = "Results describe only the reviews submitted for analysis and may not represent every review for the product."
+
+# CSV upload safety constants
+MAX_BATCH_REVIEWS = 100
+MAX_CSV_ROWS = 1000
+MAX_CSV_BYTES = 5 * 1024 * 1024
 
 app = FastAPI(title="Review Credibility Analyzer")
 
@@ -31,7 +36,7 @@ app.add_middleware(
 
 class AnalyzeIn(BaseModel):
     text: str
-    rating: Optional[int] = None
+    rating: int | None = Field(default=None, ge=1, le=5)
 
     @field_validator("text")
     @classmethod
@@ -42,7 +47,7 @@ class AnalyzeIn(BaseModel):
 
 
 class BatchIn(BaseModel):
-    reviews: list[str]
+    reviews: list[str] = Field(min_length=1, max_length=100)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -79,31 +84,7 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
         })
         
     if not analyzed_items:
-        return {
-            "message": BATCH_MESSAGE,
-            "results": [],
-            "summary": {
-                "reviews_submitted": submitted,
-                "reviews_analyzed": 0,
-                "reviews_skipped": skipped,
-                "overall_risk_score": 0.0,
-                "overall_band": "Low",
-                "overall_risk_label": "Average computer-generated writing risk",
-                "overall_interpretation": {
-                    "headline": "Few strong computer-generated writing signals were detected.",
-                    "description": "The writing has low similarity to the computer-generated examples learned by the model. This does not prove that the review was written by a person."
-                },
-                "flagged_percentage_label": "Percentage of analyzed reviews flagged as likely computer-generated",
-                "count_flagged": 0,
-                "pct_computer_generated": 0.0,
-                "distribution": {"Low": 0, "Moderate": 0, "High": 0},
-                "duplicate_reviews": 0,
-                "duplicate_groups": 0,
-                "sample_notice": BATCH_MESSAGE,
-                "message": BATCH_MESSAGE
-            },
-            "disclaimer": DISCLAIMER
-        }
+        raise HTTPException(status_code=422, detail="No meaningful review text remained after cleaning.")
         
     # Pass 2: Detect exact normalized duplicates
     normalized_map = {}
@@ -129,13 +110,6 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
         else:
             dup_assignments[indices[0]] = (False, None)
             
-    # Fallback strings to remove if duplicate reason is added
-    FALLBACKS = {
-        "The model found few strong phrase-level indicators associated with computer-generated reviews.",
-        "The model found mixed phrase-level evidence and no single pattern was decisive.",
-        "The combined writing pattern resembles the model's computer-generated training examples, but no single phrase explains the result on its own."
-    }
-
     # Pass 3: Run analysis & compile results
     results = []
     for i, item in enumerate(analyzed_items):
@@ -146,12 +120,14 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
         res["review_index"] = item["original_index"]
         res["duplicate"] = is_dup
         res["duplicate_group"] = group_id
+        res["rating"] = item["rating"]
         
         if is_dup:
-            # Remove fallback reasons
-            res["reasons"] = [r for r in res["reasons"] if r not in FALLBACKS]
-            res["reasons"].insert(0, "This review is identical to another submitted review.")
-            res["reasons"] = res["reasons"][:3]
+            # Remove fallback reasons by code representation
+            filtered_reasons = [r for r in res.get("_reasons", []) if r["code"] != "fallback"]
+            msg_list = [r["message"] for r in filtered_reasons]
+            msg_list.insert(0, "This review is identical to another submitted review.")
+            res["reasons"] = msg_list[:3]
             
         results.append(res)
         
@@ -169,6 +145,10 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
         
     was_were = "was" if count_flagged == 1 else "were"
     headline = f"Analyzed {len(results)} of {submitted} submitted reviews. {count_flagged} of {len(results)} analyzed reviews {was_were} flagged as likely computer-generated."
+
+    # Pop internal _reasons key to avoid leaking it to the public API
+    for r in results:
+        r.pop("_reasons", None)
 
     summary = {
         "reviews_submitted": submitted,
@@ -210,34 +190,42 @@ def health():
 @app.post("/analyze")
 def analyze(body: AnalyzeIn):
     try:
-        return analyze_review(body.text, rating=body.rating)
+        res = analyze_review(body.text, rating=body.rating)
+        res.pop("_reasons", None)
+        return res
     except EmptyCleanedTextError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/analyze-batch")
 def analyze_batch(body: BatchIn):
-    if len(body.reviews) > 100:
-        raise HTTPException(status_code=400, detail="Batch size exceeds the maximum limit of 100 reviews.")
     return process_batch(body.reviews)
 
 
 @app.post("/analyze-csv")
 async def analyze_csv(file: UploadFile = File(...)):
-    if not file.filename.endswith(".csv"):
+    filename = file.filename or ""
+    if not filename:
+        raise HTTPException(status_code=422, detail="Filename is missing.")
+    if not filename.lower().endswith(".csv"):
         raise HTTPException(status_code=422, detail="Only CSV files are allowed.")
-        
-    raw = await file.read()
+
+    raw = await file.read(MAX_CSV_BYTES + 1)
+    if len(raw) > MAX_CSV_BYTES:
+        raise HTTPException(status_code=413, detail="CSV file exceeds the 5 MB upload limit.")
+
     try:
         df = pd.read_csv(io.BytesIO(raw))
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Could not parse CSV: {e}")
-        
+    except Exception:
+        raise HTTPException(status_code=422, detail="The uploaded file could not be parsed as a valid CSV.")
+
+    if len(df) > MAX_CSV_ROWS:
+        raise HTTPException(status_code=422, detail=f"CSV file contains more than {MAX_CSV_ROWS} rows.")
+
+    df.columns = [col.strip() for col in df.columns]
     if "review_text" not in df.columns:
         raise HTTPException(status_code=422, detail="CSV must have a 'review_text' column")
-        
-    df = df.head(1000)  # cap at 1000 rows
-    
+
     reviews = df["review_text"].fillna("").astype(str).tolist()
     ratings = None
     if "rating" in df.columns:
@@ -245,13 +233,16 @@ async def analyze_csv(file: UploadFile = File(...)):
         for r in df["rating"]:
             try:
                 if pd.notna(r):
-                    ratings.append(int(float(r)))
+                    val = float(r)
+                    val_int = int(val)
+                    if 1 <= val_int <= 5:
+                        ratings.append(val_int)
+                    else:
+                        ratings.append(None)
                 else:
                     ratings.append(None)
             except (ValueError, TypeError):
                 ratings.append(None)
                 
     res = process_batch(reviews, ratings)
-    if res["summary"]["reviews_analyzed"] == 0:
-        raise HTTPException(status_code=400, detail="No valid review text found")
     return res

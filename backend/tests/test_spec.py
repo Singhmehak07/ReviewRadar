@@ -136,11 +136,13 @@ def test_batch_counts_flagged_skipped_distribution():
 def test_batch_division_by_zero_guard():
     payload = {"reviews": ["", "  ", "\n"]}
     response = client.post("/analyze-batch", json=payload)
-    assert response.status_code == 200
-    data = response.json()
-    assert data["message"] == "Results describe only the reviews submitted for analysis and may not represent every review for the product."
-    assert data["summary"]["reviews_analyzed"] == 0
-    assert data["summary"]["reviews_skipped"] == 3
+    assert response.status_code == 422
+    assert "No meaningful review text" in response.json()["detail"]
+
+def test_batch_size_limit_rejection():
+    payload = {"reviews": ["test"] * 101}
+    response = client.post("/analyze-batch", json=payload)
+    assert response.status_code == 422
 
 def test_batch_duplicate_detection_and_reasons():
     payload = {
@@ -187,12 +189,6 @@ def test_batch_original_index_preservation():
     results = data["results"]
     assert results[0]["review_index"] == 0
     assert results[1]["review_index"] == 2
-
-def test_batch_size_limit_rejection():
-    payload = {"reviews": ["test"] * 101}
-    response = client.post("/analyze-batch", json=payload)
-    assert response.status_code == 400
-    assert "exceeds the maximum limit of 100 reviews" in response.json()["detail"]
 
 
 # ── 4. Star-Rating Cutoffs and Risk Bands ───────────────────────────────────
@@ -418,4 +414,129 @@ One video review shkw the fans stopped working. It happened to me too, with lapt
             assert "definitely fake" not in reason.lower()
             assert "fraud detected" not in reason.lower()
             assert "reviewer is lying" not in reason.lower()
+
+
+def test_ratings_validation():
+    # 1. 1 accepted
+    res = client.post("/analyze", json={"text": "A good review", "rating": 1})
+    assert res.status_code == 200
+
+    # 2. 5 accepted
+    res = client.post("/analyze", json={"text": "A good review", "rating": 5})
+    assert res.status_code == 200
+
+    # 3. 0 rejected
+    res = client.post("/analyze", json={"text": "A good review", "rating": 0})
+    assert res.status_code == 422
+
+    # 4. 6 rejected
+    res = client.post("/analyze", json={"text": "A good review", "rating": 6})
+    assert res.status_code == 422
+
+    # 5. Negative rejected
+    res = client.post("/analyze", json={"text": "A good review", "rating": -1})
+    assert res.status_code == 422
+
+    # 6. Non-numeric rejected
+    res = client.post("/analyze", json={"text": "A good review", "rating": "five"})
+    assert res.status_code == 422
+
+    # 7. Missing accepted
+    res = client.post("/analyze", json={"text": "A good review", "rating": None})
+    assert res.status_code == 200
+
+
+def test_batch_inputs():
+    # 1. Empty rejected
+    res = client.post("/analyze-batch", json={"reviews": []})
+    assert res.status_code == 422
+
+    # 2. Exactly 100 accepted
+    res = client.post("/analyze-batch", json={"reviews": ["Valid text"] * 100})
+    assert res.status_code == 200
+
+    # 3. Over 100 rejected
+    res = client.post("/analyze-batch", json={"reviews": ["Valid text"] * 101})
+    assert res.status_code == 422
+
+    # 4. All cleaned empty rejected
+    res = client.post("/analyze-batch", json={"reviews": ["", "  "]})
+    assert res.status_code == 422
+
+
+def test_csv_upload_safety():
+    # 1. Missing filename
+    import io
+    # 1. Missing filename (TestClient treats empty filename as text field -> 422)
+    response = client.post("/analyze-csv", files={"file": ("", io.BytesIO(b"review_text\nHello"), "text/csv")})
+    assert response.status_code == 422
+
+    # 2. Uppercase extension
+    csv_data = b"review_text,rating\nGreat product,5.0"
+    response = client.post("/analyze-csv", files={"file": ("TEST.CSV", io.BytesIO(csv_data), "text/csv")})
+    assert response.status_code == 200
+
+    # 3. Wrong extension
+    response = client.post("/analyze-csv", files={"file": ("test.txt", io.BytesIO(csv_data), "text/plain")})
+    assert response.status_code == 422
+
+    # 4. Invalid CSV
+    response = client.post("/analyze-csv", files={"file": ("test.csv", io.BytesIO(b"review_text,rating\nhello\nworld,1,2"), "application/octet-stream")})
+    assert response.status_code == 422
+    assert "could not be parsed" in response.json()["detail"]
+
+    # 5. Oversized upload
+    oversized = io.BytesIO(b"a" * (5 * 1024 * 1024 + 2))
+    response = client.post("/analyze-csv", files={"file": ("test.csv", oversized, "text/csv")})
+    assert response.status_code == 413
+    assert "exceeds the 5 MB upload limit" in response.json()["detail"]
+
+    # 6. More than 1,000 rows
+    many_rows = b"review_text\n" + b"some text\n" * 1001
+    response = client.post("/analyze-csv", files={"file": ("test.csv", io.BytesIO(many_rows), "text/csv")})
+    assert response.status_code == 422
+    assert "contains more than 1000 rows" in response.json()["detail"]
+
+    # 7. Missing review_text column
+    bad_cols = b"content,rating\nGreat,5"
+    response = client.post("/analyze-csv", files={"file": ("test.csv", io.BytesIO(bad_cols), "text/csv")})
+    assert response.status_code == 422
+    assert "must have a 'review_text' column" in response.json()["detail"]
+
+    # 8. Optional ratings & invalid ratings & empty rows
+    mixed_data = b"  review_text  ,  rating  \nGreat product,5.0\nBad item,6\nNeutral product,not-a-number\nEmpty row,\n\n"
+    response = client.post("/analyze-csv", files={"file": ("test.csv", io.BytesIO(mixed_data), "text/csv")})
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert len(results) == 4
+    assert results[0]["rating"] == 5
+    assert results[1]["rating"] is None
+    assert results[2]["rating"] is None
+    assert results[3]["rating"] is None
+
+
+def test_sentiment_compound():
+    from signals.consistency import sentiment_compound
+    # 1. returns native float
+    score = sentiment_compound("This is a wonderful, fantastic and outstanding product!")
+    assert isinstance(score, float)
+    assert score > 0.0
+
+    # 2. empty returns 0.0
+    assert sentiment_compound("") == 0.0
+
+
+def test_explanations_safety():
+    # 1. Duplicate reason remains plain text and no internal reasons leak
+    payload = {
+        "reviews": [
+            "This is a duplicate review text.",
+            "This is a duplicate review text."
+        ]
+    }
+    response = client.post("/analyze-batch", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "_reasons" not in data["results"][0]
+    assert "identical to another" in data["results"][0]["reasons"][0]
 

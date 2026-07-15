@@ -7,17 +7,24 @@ The model highlights writing patterns associated with the computer-generated cla
 *   **Feature Extraction**: TF-IDF (Term Frequency-Inverse Document Frequency) Vectorizer.
 *   **Classifier**: Logistic Regression.
 *   **Classes**:
-    *   `"0"`: Ordinary/Organic writing patterns.
-    *   `"1"`: Computer-generated writing patterns.
+    *   `"0"`: Ordinary/Organic (`OR`) writing patterns.
+    *   `"1"`: Computer-generated (`CG`) writing patterns.
 *   **Risk Thresholds**:
     *   `< 40`: Low risk band.
     *   `>= 40 and < 70`: Moderate risk band.
     *   `>= 70`: High risk band.
 
+## Environment & Artifacts
+*   **Serialized Environment**: Python 3.14 (fully compatible with Python 3.11+ runtimes).
+*   **Library Dependency**: `scikit-learn==1.7.2`
+*   **Model Filenames**:
+    *   `risk_model.joblib`: Trained Logistic Regression classifier weights.
+    *   `tfidf_vectorizer.joblib`: Serialized TF-IDF vectorizer configuration and vocabulary.
+
 ## Inputs
 *   Single pasted review text.
 *   Batch of pasted review texts (up to 100).
-*   CSV file containing a `review_text` column and an optional `rating` column (up to 1000 rows).
+*   CSV file containing a `review_text` column and an optional `rating` column (up to 1000 rows, max 5 MB).
 *   Optional star rating (1–5) for rating/text consistency analysis.
 *   Conservative copied-text cleaning (removes marketplace UI headers, footers, helpful vote count lines, isolated dates, and isolated star ratings).
 
@@ -29,11 +36,14 @@ The model highlights writing patterns associated with the computer-generated cla
 *   **Exact Duplicate Detection**: Groups and tags matching text submissions in batches.
 *   **Batch Aggregate Summary**: Submitted, analyzed, and skipped review counts, average risk score, band, and percentage flagged.
 
-## What the Model Measures
+## What the ML Model Measures
 *   Learned text/n-gram features present in the TF-IDF vectorizer vocabulary.
-*   Optional rating/text contradiction (using VADER sentiment polarity).
-*   Exact duplicate text inside submitted batches.
-*   *Note*: Contradictions and duplicates are supporting evidence signals and do not modify or override the machine learning model's probability score.
+*   The Logistic Regression probability of the target class `"1"`.
+
+## Supporting Application Signals
+*   **VADER rating/text contradiction**: Sentiment compound score calculated using VADER polarity scores.
+*   **Exact duplicate detection**: Compares exact normalized text structures inside submitted batches.
+*   *Note*: Supporting signals are displayed as context and do not modify the model probability.
 
 ## What the Model Does Not Measure
 This model does not have access to, and does not measure:
@@ -47,18 +57,15 @@ This model does not have access to, and does not measure:
 *   Perplexity, burstiness, or lexical variety metrics.
 *   Definitive AI authorship or intent of fraud.
 
+## Evaluation
+Model evaluation details will be documented after the existing training workflow is cleaned and rerun reproducibly.
+
 ## Known Limitations
 *   **Short Reviews**: Text with very few words may provide insufficient vocabulary overlap for reliable TF-IDF scoring.
 *   **False Positives**: Generic, formulaic genuine reviews (e.g. "Excellent product, fast shipping, highly recommend") may be flagged due to vocabulary overlap with common generated templates.
 *   **AI Adaptability**: Advanced or custom-prompted LLMs can generate reviews that avoid learned training set features entirely.
 *   **Non-Native English**: Reviews written by non-native English speakers may contain vocabulary patterns that trigger flags, but this must never be assumed to indicate dishonesty or computer-generation.
 *   **Sample Context**: Batch and CSV results describe only the submitted sample and do not represent all marketplace reviews for a product.
-
-## Research Context
-Research has identified several possible linguistic and behavioral indicators of fake reviews, such as repetitive or redundant language, lower variation in writing structure, formulaic or predictable phrasing, emotional exaggeration, rating/text inconsistency, duplicate content, and reviewer behavioral patterns.
-
-> [!NOTE]
-> This implementation displays only evidence directly calculated from its TF-IDF model, rating/text consistency check, and exact duplicate detection.
 
 ## Responsible-Use Statement
 This system is intended as a review-screening and educational tool. Its predictions should not be used as the sole basis for accusing a reviewer, removing content, or making legal or financial decisions.

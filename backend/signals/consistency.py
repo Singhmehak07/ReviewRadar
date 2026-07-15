@@ -1,7 +1,7 @@
 import re
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# ponytail: module-level singleton, one allocation
+# Reuse one sentiment analyzer instance across requests.
 _analyzer = SentimentIntensityAnalyzer()
 
 
@@ -15,17 +15,22 @@ def clean_for_sentiment(text: str) -> str:
     return text
 
 
+def sentiment_compound(text: str) -> float:
+    cleaned = clean_for_sentiment(text)
+    if not cleaned:
+        return 0.0
+    if len(cleaned) > 5000:
+        cleaned = cleaned[:5000]
+    analyzer = get_analyzer()
+    return float(analyzer.polarity_scores(cleaned)["compound"])
+
+
 def consistency_flag(text: str, rating: int) -> str:
     cleaned = clean_for_sentiment(text)
     if not cleaned:
         return "no_text"
-    
-    # Truncate text to 5000 characters to avoid VADER performance bottlenecks on long inputs
-    if len(cleaned) > 5000:
-        cleaned = cleaned[:5000]
-        
-    analyzer = get_analyzer()
-    compound = analyzer.polarity_scores(cleaned)["compound"]
+
+    compound = sentiment_compound(text)
     if (rating >= 4 and compound <= -0.3) or (rating <= 2 and compound >= 0.3):
         return "contradiction"
     if -0.3 < compound < 0.3:
