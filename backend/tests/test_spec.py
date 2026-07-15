@@ -61,24 +61,55 @@ def test_flag_neutral_text():
 
 def test_flag_consistent():
     assert consistency_flag(5, "I love this, it's wonderful and fantastic!") == "consistent"
-
-
 # ── batch summary math ────────────────────────────────────────────────────────
 
 def test_batch_summary_math():
-    """avg_risk_score and band_counts must be arithmetically correct."""
-    texts = [
-        "great product love it amazing wonderful",
-        "this is a product",
-        "terrible awful horrible garbage worst ever",
-    ]
-    results = [predict_review(t) for t in texts]
-    count = len(results)
-    avg = round(sum(r["risk_score"] for r in results) / count, 2)
-    band_counts: dict = {"Low": 0, "Moderate": 0, "High": 0}
-    for r in results:
-        band_counts[r["risk_band"]] += 1
-
-    assert count == 3
-    assert avg == round(sum(r["risk_score"] for r in results) / 3, 2)
-    assert sum(band_counts.values()) == 3
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    
+    payload = {
+        "reviews": [
+            "great product love it amazing wonderful",
+            "   ",
+            "this is a product",
+            "",
+            "terrible awful horrible garbage worst ever",
+            "   \t\n   "
+        ]
+    }
+    
+    response = client.post("/analyze-batch", json=payload)
+    assert response.status_code == 200
+    
+    data = response.json()
+    assert "results" in data
+    assert "summary" in data
+    assert "disclaimer" in data
+    
+    results = data["results"]
+    summary = data["summary"]
+    
+    # We submitted 6, but 3 are blank/whitespace, so 3 are skipped
+    assert len(results) == 3
+    assert summary["reviews_submitted"] == 6
+    assert summary["reviews_analyzed"] == 3
+    assert summary["reviews_skipped"] == 3
+    
+    assert "overall_risk_score" in summary
+    assert "overall_band" in summary
+    assert "count_flagged" in summary
+    assert "pct_computer_generated" in summary
+    assert "distribution" in summary
+    
+    # Check distribution
+    dist = summary["distribution"]
+    assert sum(dist.values()) == 3
+    
+    # Guard check for zero analyzed
+    payload_empty = {"reviews": ["", "  ", " \n "]}
+    response_empty = client.post("/analyze-batch", json=payload_empty)
+    assert response_empty.status_code == 200
+    assert response_empty.json()["message"] == "No valid review text found"
+    assert response_empty.json()["summary"]["reviews_analyzed"] == 0
+    assert response_empty.json()["summary"]["reviews_skipped"] == 3
