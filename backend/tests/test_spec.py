@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 # Add parent directory to path so that backend files can be imported properly
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from predict import predict_review, assign_risk_band, analyze_review, EmptyCleanedTextError
+from predict import predict_review, assign_risk_band, analyze_review, EmptyCleanedTextError, get_risk_interpretation
 from signals.consistency import consistency_flag
 from text_cleaning import clean_review_text
 from main import app, normalize_for_duplicate
@@ -40,7 +40,6 @@ def test_cleaner_removes_exact_ui_noise_lines():
         "Report Abuse"
     )
     res = clean_review_text(raw)
-    # Checks that UI noise is removed, but genuine sentences are preserved.
     assert "Wonderful product. The stand feels stable and supports my laptop well." in res["cleaned_text"]
     assert "Read More" not in res["cleaned_text"]
     assert "Helpful? 43" not in res["cleaned_text"]
@@ -69,12 +68,17 @@ def test_single_review_shape_and_types():
     assert "cleaned_text" in res
     assert "risk_score" in res
     assert "risk_band" in res
+    assert "risk_label" in res
+    assert "interpretation" in res
     assert "reasons" in res
     assert "cleaning" in res
     assert "disclaimer" in res
     assert isinstance(res["risk_score"], float)
     assert isinstance(res["reasons"], list)
     assert len(res["reasons"]) <= 3
+    assert res["risk_label"] == "Computer-generated writing risk"
+    assert "headline" in res["interpretation"]
+    assert "description" in res["interpretation"]
     assert res["disclaimer"] == "Highlights suspicious review patterns; does not prove fraud."
 
 def test_single_review_reasons_contain_no_fraud_claims():
@@ -86,7 +90,6 @@ def test_single_review_reasons_contain_no_fraud_claims():
         assert "dishonest" not in reason.lower()
 
 def test_single_review_empty_cleaned_text_rejection():
-    # If no text remains after cleaning, raise EmptyCleanedTextError
     with pytest.raises(EmptyCleanedTextError):
         analyze_review("Helpful? 43\nRead More")
 
@@ -131,12 +134,11 @@ def test_batch_counts_flagged_skipped_distribution():
     assert summary["pct_computer_generated"] == expected_pct
 
 def test_batch_division_by_zero_guard():
-    # If all entries are empty, avoid dividing by zero
     payload = {"reviews": ["", "  ", "\n"]}
     response = client.post("/analyze-batch", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "No valid review text found"
+    assert data["message"] == "Results describe only the reviews submitted for analysis and may not represent every review for the product."
     assert data["summary"]["reviews_analyzed"] == 0
     assert data["summary"]["reviews_skipped"] == 3
 
@@ -144,9 +146,9 @@ def test_batch_duplicate_detection_and_reasons():
     payload = {
         "reviews": [
             "Awesome product! Highly recommend.",
-            "Awesome product! Highly recommend.", # exact duplicate
+            "Awesome product! Highly recommend.",
             "This is a completely unique review.",
-            "Awesome product! Highly recommend.  " # exact normalized duplicate (whitespace trailing)
+            "Awesome product! Highly recommend.  "
         ]
     }
     response = client.post("/analyze-batch", json=payload)
@@ -159,7 +161,6 @@ def test_batch_duplicate_detection_and_reasons():
     assert summary["duplicate_reviews"] == 3
     assert summary["duplicate_groups"] == 1
     
-    # Verify duplicates flag & reasons
     assert results[0]["duplicate"] is True
     assert results[1]["duplicate"] is True
     assert results[3]["duplicate"] is True
@@ -175,7 +176,7 @@ def test_batch_original_index_preservation():
     payload = {
         "reviews": [
             "Review index 0",
-            "   ", # index 1 skipped
+            "   ",
             "Review index 2"
         ]
     }
@@ -188,7 +189,6 @@ def test_batch_original_index_preservation():
     assert results[1]["review_index"] == 2
 
 def test_batch_size_limit_rejection():
-    # Exceeds the limit of 100
     payload = {"reviews": ["test"] * 101}
     response = client.post("/analyze-batch", json=payload)
     assert response.status_code == 400
@@ -208,3 +208,214 @@ def test_band_69():
 
 def test_band_70():
     assert assign_risk_band(70) == "High"
+
+
+# ── 5. Responsible Interpretation & Evidence Rules ──────────────────────────
+
+def test_risk_interpretation_definitions():
+    low = get_risk_interpretation(35)
+    assert low["risk_band"] == "Low"
+    assert "Few strong computer-generated" in low["headline"]
+    assert "does not prove" in low["description"]
+
+    mod = get_risk_interpretation(50)
+    assert mod["risk_band"] == "Moderate"
+    assert "mixture of ordinary" in mod["headline"]
+    assert "evidence is mixed" in mod["description"]
+
+    high = get_risk_interpretation(85)
+    assert high["risk_band"] == "High"
+    assert "strongly resembles" in high["headline"]
+    assert "does not establish" in high["description"]
+
+def test_unmeasured_patterns_safety():
+    # Make sure we don't display unmeasured patterns in explanations
+    res = analyze_review("A simple organic review text.")
+    forbidden = [
+        "perplexity", "burstiness", "sentence-length", "lexical diversity",
+        "reviewer posting frequency", "account history", "verified-purchase",
+        "device behaviour", "coordinated reviewer", "ip address"
+    ]
+    for r in res["reasons"]:
+        for f in forbidden:
+            assert f not in r.lower()
+
+def test_safety_check_definitive_claims():
+    # Safe checks for single reviews
+    res1 = analyze_review("Outstanding product. Best purchase ever!")
+    res2 = analyze_review("Worst item ever, do not buy.")
+    
+    def check_reasons(reasons):
+        for reason in reasons:
+            assert "confirmed fake" not in reason.lower()
+            assert "definitely fake" not in reason.lower()
+            assert "fraud detected" not in reason.lower()
+            assert "reviewer is lying" not in reason.lower()
+            
+    check_reasons(res1["reasons"])
+    check_reasons(res2["reasons"])
+
+def test_batch_headline_pluralization_and_metadata():
+    payload = {
+        "reviews": [
+            "Awesome product, highly recommend!", # flagged high or moderate
+            "Awesome product, highly recommend!",
+            "Terrible experience, completely broke."
+        ]
+    }
+    response = client.post("/analyze-batch", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    
+    assert "headline" in data
+    assert "overall_risk_label" in data["summary"]
+    assert "flagged_percentage_label" in data["summary"]
+    assert "sample_notice" in data["summary"]
+    assert data["message"] == "Results describe only the reviews submitted for analysis and may not represent every review for the product."
+    assert "fake" not in data["headline"].lower()
+
+def test_pasted_cooling_pad_batch():
+    reviews = [
+        """PRAVEEN KUMAR
+5 out of 5 starsBest Cooling pad out there
+Reviewed in India on 15 August 2022
+Verified Purchase
+Came across this product while searching for a cooling pad for my 2 laptops- gaming and work laptops; which get heated up real quick while using it on a desk. Although there are a lot of cooling pad options out there, my efforts on finding a decent cooling that will be good to use for both types of usage was going in vain as my office laptop is 13" in size, and my old cooling pad laptop holder used to always come in the way and make it uncomfortable to use and my gaming laptop is an alienware 17" which is big and weighs quite a bit - so a cheaper laptop cooling pad that I used earlier was of no use literally.
+
+
+Coming to this cooling pad, I felt the price was a bit high at first instance but after going through the features, I felt this would serve both my purpose, and to my pleasure it perfectly fits my requirement.
+
+The packaging is very premium to say the least (loved the logo ribbon that was tied with the USB cable).
+
+
+The first feature that really stood out which I didn't find in any of the cooling pads available on amazon till now was this elevation bracket; so basically it is a cooling pad cum a laptop holder which you can raise up and I can use the laptop in a relaxed posture. Now I can sit for long gaming/programming sessions without any stress on my body and also on my laptops, it is simply great! Plus the fans are so quiet that I sometimes check back if it is even ON... LOL :D
+
+The phone holder is also an important addition to this cooling pad, it greatly helps me keep a tab on my phone while I get busy on my laptop.
+
+
+The metal base built is quite sturdy and multiple adjustment angles provide the exact viewing angle that I need.
+
+Being a professional gamer and a techie, I am enticed by the RGB but I like the minimalistic design and the RGB aspect in this cooling is just what I wanted. All-in-all, super happy to have this great cooling pad.
+
+Read more
+Best Cooling pad out there
+Best Cooling pad out there
+Best Cooling pad out there
+Best Cooling pad out there
+Best Cooling pad out there
+Best Cooling pad out there
+Best Cooling pad out there
+17 people found this helpful
+Helpful
+Report""",
+
+        """Arjun Mishra
+4 out of 5 starsGood Build quality but read this before buying
+Reviewed in India on 21 October 2023
+Verified Purchase
+So I ordered this laptop cooler because I don’t have AC room or anything and I used to get 80 degree temperatures on CPU and GPU after this temperature dropped by 3 or 4 degree only. Ya but this is good product as per build quality and ya after gaming it cools down laptop temperature within seconds Also this can support a laptop like ASUS Tuf Dash as in photo also That RGB light is not that much bright so don’t expect anything.
+
+Good Build quality but read this before buying
+8 people found this helpful
+Helpful
+Report""",
+
+        """Purushottam paras
+5 out of 5 starsBest Cooling Pad Everrrr!!!!!
+Reviewed in India on 11 July 2026
+Verified Purchase
+This cooling pad is the best accessory product I have ever purchased the leg stand, are still intact and working after soo many years, and the cooling fans are working properly as well, the company has done a great job
+
+Helpful
+Report""",
+
+        """Anubhav G.
+1 out of 5 starsReal long term review- dont waste your money buy something else
+Reviewed in India on 9 June 2025
+Verified Purchase
+Bought this as laptop (officially working laptop) use to just switch off or freeze. Bought in November 2024 where its almost winters in Northern India still 2 months into use the laptop still froze, the same laptop on some other non fan model laptop stand worked fine though. Now almost less than an year the fan went kaput as it started making loads of noise most likely a bearing issue. In summary don't buy this waste garbage chinese product (chala to chaand tak warna shaam tak) considering the exuberant cost its not worth the hard earned money. First of all, it is a gimmick with fans which doesn't work in the first place and secondly its not a long term solution ie wont work properly for even an year.
+
+Money wasted=lesson learned.
+
+2 people found this helpful
+Helpful
+Report""",
+
+        """ANGER_MAN
+5 out of 5 starsNice quality
+Reviewed in India on 29 May 2026
+Verified Purchase
+Best build quality
+
+Helpful
+Report""",
+
+        """anshu
+5 out of 5 starsgo for it
+Reviewed in India on 5 July 2026
+Verified Purchase
+very sturdy very strong just the fan speed could have been better and lower price like 17to1800
+
+Helpful
+Report""",
+
+        """aaditya keshari
+3 out of 5 starsGood Performance but Needs Improvement
+Reviewed in India on 15 February 2026
+Verified Purchase
+I bought the Archer Tech Lab RGB Gaming Laptop Cooling Pad, and I am happy with it overall.The cooling pad works well and helps keep my laptop cool during long gaming and study sessions. The fans are strong and the airflow reduces heat. The RGB lights look cool and add style to my setup.The size fits most laptops and it feels sturdy. The USB connection is easy and doesn’t require extra power. It also has a comfortable angle for typing and gaming.One problem: sometimes it turns off automatically by itself. This can be annoying during long use.Overall, this cooling pad is useful for gamers and students who use laptops for long hours. It is good value for money, but the automatic shut-off issue should be improved.
+
+One person found this helpful
+Helpful
+Report""",
+
+        """GSingh
+4 out of 5 starsGood Coolpad for laptops
+Reviewed in India on 23 November 2024
+Verified Purchase
+Got this for about 2300. It's worth the money for it's design & various options to choose from.
+
+
+This Coolpad has good features and works as advertised. However 17" laptop is hard to handle by this Coolpad since mly 17" laptop overflows the entire pad. It's not recommended to use this pad inclined with heavy or 17" laptop. In that case the laptop is pushed outside the pad, making this pad ineffective. That's why 4 stars else it's a awesome pad.
+
+
+Size wize it's for 14" and upto 15.6" laptop sizes. LED is worthless while in use. Other features are good like it has a optional stand. It gives ventilation to the five fans.
+
+
+Good design features include fan starts from highest speed to lowest, in that order. Fans are almost quiet. It has a phone tray for one slim phone. USB wire provided has sufficient length to cover breath of 17" & hence lower dimensions of laptops. This one is sturdy.
+
+
+This one doesn't reduce temperature that much as my previous one. But, it's still effective since stand gives ventilation & even without opening stand, it's designed to suck air from down to up direction.
+
+
+I like this Coolpad as it's comfortable while in use on the bed and with multiple options (stand / on table / phone / 7 inclines / fan speed).
+
+
+One video review shkw the fans stopped working. It happened to me too, with laptop powering through usb. But, worked at lower speeds 1 &2. When I changed power source to 2.4 A usb, it works Ok.
+"""
+    ]
+    
+    payload = {"reviews": reviews}
+    response = client.post("/analyze-batch", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    
+    summary = data["summary"]
+    results = data["results"]
+    
+    assert summary["reviews_submitted"] == 8
+    assert summary["reviews_analyzed"] == 8
+    assert summary["reviews_skipped"] == 0
+    
+    for idx, r in enumerate(results):
+        assert len(r["cleaned_text"]) > 0
+        assert r["review_index"] == idx
+        # Ensure reasons cap at 3
+        assert len(r["reasons"]) <= 3
+        # Ensure safety constraints
+        for reason in r["reasons"]:
+            assert "confirmed fake" not in reason.lower()
+            assert "definitely fake" not in reason.lower()
+            assert "fraud detected" not in reason.lower()
+            assert "reviewer is lying" not in reason.lower()
+

@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from predict import analyze_review, EmptyCleanedTextError, HIGH_RISK_THRESHOLD
+from predict import analyze_review, EmptyCleanedTextError, HIGH_RISK_THRESHOLD, get_risk_interpretation
 from text_cleaning import clean_review_text
 
 DISCLAIMER = "Highlights suspicious review patterns; does not prove fraud."
@@ -80,7 +80,7 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
         
     if not analyzed_items:
         return {
-            "message": "No valid review text found",
+            "message": BATCH_MESSAGE,
             "results": [],
             "summary": {
                 "reviews_submitted": submitted,
@@ -88,11 +88,18 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
                 "reviews_skipped": skipped,
                 "overall_risk_score": 0.0,
                 "overall_band": "Low",
+                "overall_risk_label": "Average computer-generated writing risk",
+                "overall_interpretation": {
+                    "headline": "Few strong computer-generated writing signals were detected.",
+                    "description": "The writing has low similarity to the computer-generated examples learned by the model. This does not prove that the review was written by a person."
+                },
+                "flagged_percentage_label": "Percentage of analyzed reviews flagged as likely computer-generated",
                 "count_flagged": 0,
                 "pct_computer_generated": 0.0,
                 "distribution": {"Low": 0, "Moderate": 0, "High": 0},
                 "duplicate_reviews": 0,
                 "duplicate_groups": 0,
+                "sample_notice": BATCH_MESSAGE,
                 "message": BATCH_MESSAGE
             },
             "disclaimer": DISCLAIMER
@@ -122,6 +129,13 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
         else:
             dup_assignments[indices[0]] = (False, None)
             
+    # Fallback strings to remove if duplicate reason is added
+    FALLBACKS = {
+        "The model found few strong phrase-level indicators associated with computer-generated reviews.",
+        "The model found mixed phrase-level evidence and no single pattern was decisive.",
+        "The combined writing pattern resembles the model's computer-generated training examples, but no single phrase explains the result on its own."
+    }
+
     # Pass 3: Run analysis & compile results
     results = []
     for i, item in enumerate(analyzed_items):
@@ -134,6 +148,8 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
         res["duplicate_group"] = group_id
         
         if is_dup:
+            # Remove fallback reasons
+            res["reasons"] = [r for r in res["reasons"] if r not in FALLBACKS]
             res["reasons"].insert(0, "This review is identical to another submitted review.")
             res["reasons"] = res["reasons"][:3]
             
@@ -142,13 +158,8 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
     # Pass 4: Calculate collective summary
     overall_score = round(sum(r["risk_score"] for r in results) / len(results), 2)
     
-    if overall_score < 40:
-        overall_band = "Low"
-    elif overall_score < 70:
-        overall_band = "Moderate"
-    else:
-        overall_band = "High"
-        
+    overall_interp = get_risk_interpretation(overall_score)
+    
     count_flagged = sum(1 for r in results if r["risk_score"] >= HIGH_RISK_THRESHOLD)
     pct_cg = round((count_flagged / len(results)) * 100, 1)
     
@@ -156,21 +167,32 @@ def process_batch(reviews_list: list[str], ratings_list: list[Optional[int]] = N
     for r in results:
         distribution[r["risk_band"]] += 1
         
+    was_were = "was" if count_flagged == 1 else "were"
+    headline = f"Analyzed {len(results)} of {submitted} submitted reviews. {count_flagged} of {len(results)} analyzed reviews {was_were} flagged as likely computer-generated."
+
     summary = {
         "reviews_submitted": submitted,
         "reviews_analyzed": len(results),
         "reviews_skipped": skipped,
         "overall_risk_score": overall_score,
-        "overall_band": overall_band,
+        "overall_band": overall_interp["risk_band"],
+        "overall_risk_label": "Average computer-generated writing risk",
+        "overall_interpretation": {
+            "headline": overall_interp["headline"],
+            "description": overall_interp["description"]
+        },
+        "flagged_percentage_label": "Percentage of analyzed reviews flagged as likely computer-generated",
         "count_flagged": count_flagged,
         "pct_computer_generated": pct_cg,
         "distribution": distribution,
         "duplicate_reviews": duplicate_reviews,
         "duplicate_groups": duplicate_groups,
+        "sample_notice": BATCH_MESSAGE,
         "message": BATCH_MESSAGE
     }
     
     return {
+        "headline": headline,
         "results": results,
         "summary": summary,
         "disclaimer": DISCLAIMER,
@@ -230,6 +252,6 @@ async def analyze_csv(file: UploadFile = File(...)):
                 ratings.append(None)
                 
     res = process_batch(reviews, ratings)
-    if "message" in res and res["message"] == "No valid review text found":
+    if res["summary"]["reviews_analyzed"] == 0:
         raise HTTPException(status_code=400, detail="No valid review text found")
     return res

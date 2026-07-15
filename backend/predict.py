@@ -9,7 +9,6 @@ class EmptyCleanedTextError(ValueError):
 
 HIGH_RISK_THRESHOLD = 70
 
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 tfidf = joblib.load(os.path.join(BASE_DIR, "models", "tfidf_vectorizer.joblib"))
 model = joblib.load(os.path.join(BASE_DIR, "models", "risk_model.joblib"))
@@ -27,6 +26,26 @@ def assign_risk_band(score):
     elif score < 70:
         return "Moderate"
     return "High"
+
+def get_risk_interpretation(risk_score: float) -> dict:
+    if risk_score < 40:
+        return {
+            "risk_band": "Low",
+            "headline": "Few strong computer-generated writing signals were detected.",
+            "description": "The writing has low similarity to the computer-generated examples learned by the model. This does not prove that the review was written by a person."
+        }
+    elif risk_score < 70:
+        return {
+            "risk_band": "Moderate",
+            "headline": "The review contains a mixture of ordinary and suspicious writing signals.",
+            "description": "Some writing patterns resemble computer-generated examples, but the evidence is mixed. Review the supporting reasons rather than relying on the score alone."
+        }
+    else:
+        return {
+            "risk_band": "High",
+            "headline": "The writing strongly resembles computer-generated examples from the model's training data.",
+            "description": "This review has been flagged for closer inspection. A high score does not establish how the review was created or whether it is deceptive."
+        }
 
 def predict_review(text):
     cleaned = clean_text(text)
@@ -94,22 +113,37 @@ def analyze_review(raw_text: str, rating: int | None = None) -> dict:
         quoted_feats = [f'"{f}"' for f in top_features]
         phrase_list = ", ".join(quoted_feats)
         model_reason = f"The model weighted phrases such as {phrase_list} toward the computer-generated class."
-    else:
-        model_reason = "The model found few strong phrase-level indicators associated with computer-generated reviews."
 
-    # Aggregate reasons (cap at 3)
+    # Aggregate reasons
     reasons = []
     if consistency_reason:
         reasons.append(consistency_reason)
     if model_reason:
         reasons.append(model_reason)
+
+    # Fallbacks if no evidence is found
+    if not reasons:
+        score = pred["risk_score"]
+        if score < 40:
+            reasons.append("The model found few strong phrase-level indicators associated with computer-generated reviews.")
+        elif score < 70:
+            reasons.append("The model found mixed phrase-level evidence and no single pattern was decisive.")
+        else:
+            reasons.append("The combined writing pattern resembles the model's computer-generated training examples, but no single phrase explains the result on its own.")
         
     reasons = reasons[:3]
+    
+    interp = get_risk_interpretation(pred["risk_score"])
     
     res = {
         "cleaned_text": cleaned_text,
         "risk_score": pred["risk_score"],
-        "risk_band": pred["risk_band"],
+        "risk_band": interp["risk_band"],
+        "risk_label": "Computer-generated writing risk",
+        "interpretation": {
+            "headline": interp["headline"],
+            "description": interp["description"]
+        },
         "reasons": reasons,
         "cleaning": {
             "original_character_count": cleaning_res["original_character_count"],
