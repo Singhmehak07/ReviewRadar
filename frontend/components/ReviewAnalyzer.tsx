@@ -30,17 +30,43 @@ export function ReviewAnalyzer() {
   const [error, setError] = useState("");
   const [singleResult, setSingleResult] = useState<ReviewResult | null>(null);
   const [batchResult, setBatchResult] = useState<BatchResponse | null>(null);
-  const [apiStatus, setApiStatus] = useState<"checking" | "ready" | "error">("checking");
+  const [apiStatus, setApiStatus] = useState<"checking" | "waking" | "ready">("checking");
 
   useEffect(() => {
     let active = true;
-    checkHealth().then((ok) => {
-      if (active) {
-        setApiStatus(ok ? "ready" : "error");
+    let timerId: NodeJS.Timeout | null = null;
+
+    async function verifyHealth() {
+      const ok = await checkHealth();
+      if (!active) return;
+      if (ok) {
+        setApiStatus("ready");
+        if (timerId) {
+          clearInterval(timerId);
+        }
+      } else {
+        setApiStatus("waking");
+        if (!timerId) {
+          timerId = setInterval(async () => {
+            const stillOk = await checkHealth();
+            if (active && stillOk) {
+              setApiStatus("ready");
+              if (timerId) {
+                clearInterval(timerId);
+              }
+            }
+          }, 3000);
+        }
       }
-    });
+    }
+
+    verifyHealth();
+
     return () => {
       active = false;
+      if (timerId) {
+        clearInterval(timerId);
+      }
     };
   }, []);
 
@@ -73,6 +99,11 @@ export function ReviewAnalyzer() {
     setError("");
     setSingleResult(null);
     setBatchResult(null);
+
+    if (apiStatus !== "ready") {
+      setError("Server is waking up");
+      return;
+    }
 
     if (mode === "single" && !singleText.trim()) {
       setError("Paste a review before starting the analysis.");
@@ -129,9 +160,9 @@ export function ReviewAnalyzer() {
 
   const activeMode = MODES.find((item) => item.id === mode)!;
 
-  const statusColor = apiStatus === "checking" ? "var(--muted)" : apiStatus === "ready" ? "var(--green)" : "var(--red)";
-  const statusShadow = apiStatus === "checking" ? "var(--surface-soft)" : apiStatus === "ready" ? "var(--green-soft)" : "var(--red-soft)";
-  const statusText = apiStatus === "checking" ? "Checking API status..." : apiStatus === "ready" ? "API ready" : "API connection error";
+  const statusColor = apiStatus === "checking" ? "var(--muted)" : apiStatus === "ready" ? "var(--green)" : "var(--amber)";
+  const statusShadow = apiStatus === "checking" ? "var(--surface-soft)" : apiStatus === "ready" ? "var(--green-soft)" : "var(--amber-soft)";
+  const statusText = apiStatus === "checking" ? "Checking API status..." : apiStatus === "ready" ? "API ready" : "Server is waking up";
 
   return (
     <section className="analyzer" aria-labelledby="analyzer-title" aria-busy={loading}>
@@ -255,7 +286,12 @@ export function ReviewAnalyzer() {
         {error && <div className="form-alert" role="alert">{error}</div>}
 
         <div className="submit-row">
-          <button className="primary-button" type="submit" disabled={loading}>
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={loading}
+            style={apiStatus !== "ready" ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
+          >
             {loading ? <><span className="spinner" aria-hidden="true" /> Analyzing</> : "Analyze reviews"}
           </button>
           <p>Only submitted text is analyzed.</p>
@@ -263,6 +299,11 @@ export function ReviewAnalyzer() {
       </form>
 
       <div className="status-region" aria-live="polite" aria-atomic="true">
+        {apiStatus === "waking" && (
+          <p className="loading-note" style={{ color: "var(--amber)", borderColor: "var(--amber-soft)" }}>
+            Server is waking up...
+          </p>
+        )}
         {loading && <p className="loading-note">The free API may need a moment to wake up.</p>}
       </div>
 
