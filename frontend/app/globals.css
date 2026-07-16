@@ -237,7 +237,6 @@
     .hero-note { margin-top: 30px; }
     .analyzer { padding: 20px; border-radius: 13px; }
     .analyzer-head { align-items: center; }
-    .api-state { font-size: 0; }
     .mode-tabs { overflow: visible; grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .mode-tabs button { padding-inline: 4px; font-size: 12px; }
     .field-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
