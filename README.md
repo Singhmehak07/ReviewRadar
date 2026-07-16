@@ -277,7 +277,7 @@ ReviewRadar/
 
 ## Dataset
 
-Dataset provenance, expected columns, label definitions, and local setup belong in [`data/README.md`](./data/README.md). Full training CSVs should remain outside Git unless their original license explicitly permits redistribution.
+Dataset provenance, expected columns, label definitions, and local setup belong in [`data/README.md`](./data/README.md).
 
 ## Known limitations
 
@@ -290,12 +290,6 @@ Dataset provenance, expected columns, label definitions, and local setup belong 
 
 See the [`Model Card`](./backend/MODEL_CARD.md) for detailed scope and responsible-use guidance.
 
-## Project status
-
-- **Backend MVP:** complete
-- **Hosted API:** available on Render
-- **Frontend:** complete and deployed to Vercel
-- **Training workflow cleanup:** maintained separately from the inference API
 
 ## Author
 
