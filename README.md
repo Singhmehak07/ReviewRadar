@@ -264,6 +264,13 @@ ReviewRadar/
 │   └── text_cleaning.py
 ├── data/
 │   └── README.md
+├── frontend/
+│   ├── app/
+│   ├── components/
+│   ├── lib/
+│   ├── public/
+│   ├── README.md
+│   └── package.json
 ├── README.md
 └── render.yaml
 ```
@@ -287,7 +294,7 @@ See the [`Model Card`](./backend/MODEL_CARD.md) for detailed scope and responsib
 
 - **Backend MVP:** complete
 - **Hosted API:** available on Render
-- **Frontend:** planned separately
+- **Frontend:** complete and deployed to Vercel
 - **Training workflow cleanup:** maintained separately from the inference API
 
 ## Author
